@@ -43,11 +43,9 @@ def get_genotype_string(tumor_state):
     a_count = c - b
     b_count = b
     
-    # Handle fractional states (Subclonal mixtures)
     if isinstance(c, float) and not c.is_integer():
         return f"Mix (Avg A:{a_count}, B:{b_count})", a_count, b_count
         
-    # Handle integer states
     a_count, b_count = int(a_count), int(b_count)
     genotype = ("A" * a_count) + ("B" * b_count)
     return genotype, a_count, b_count
@@ -56,7 +54,7 @@ def calc_admixture(tumor, purity):
     bulk_c = (purity * tumor['c']) + ((1 - purity) * 2)
     bulk_b = (purity * tumor['b']) + ((1 - purity) * 1)
     
-    log2 = -2.0 if bulk_c == 0 else float(np.log2(bulk_c / 2))
+    log2 = -5.0 if bulk_c == 0 else float(np.log2(bulk_c / 2))
     baf = 0.5 if bulk_c == 0 else bulk_b / bulk_c
     return log2, min(max(baf, 0), 1)
 
@@ -73,12 +71,12 @@ with st.sidebar:
     purity = st.slider("Tumor Purity", 0.1, 1.0, 0.80, step=0.05)
     
     st.subheader("Branch 1: Base State")
-    b1_label = st.selectbox("Initial Tumor State", list(INITIAL_STATES.keys()), index=1)
+    b1_label = st.selectbox("Initial Tumor State", list(INITIAL_STATES.keys()), index=2) # Changed default to Deletion
     
     st.subheader("Branch 2: Settings")
     is_linked = st.checkbox("Link Branches (Sequential)", value=True)
     b2_base_label = st.selectbox("Branch 2: Base State", list(INITIAL_STATES.keys()), index=0, disabled=is_linked)
-    b2_event_key = st.selectbox("Next Event", list(EVENTS.keys()), format_func=lambda x: EVENTS[x], index=6)
+    b2_event_key = st.selectbox("Next Event", list(EVENTS.keys()), format_func=lambda x: EVENTS[x], index=1) # Changed default to delA
 
 # --- Routing ---
 g1 = INITIAL_STATES[b1_label]
@@ -96,7 +94,8 @@ col1, col2 = st.columns(2)
 with col1:
     st.metric(label="Branch 1 Genotype", value=g1_str, delta=f"A: {g1_a} | B: {g1_b}", delta_color="off")
 with col2:
-    st.metric(label="Branch 2 Genotype", value=g2_str, delta=f"A: {g2_a} | B: {g2_b}", delta_color="off")
+    st.metric(label="Branch 2 Genotype (Deep Deletion)" if g2['c']==0 else "Branch 2 Genotype", 
+              value=g2_str, delta=f"A: {g2_a} | B: {g2_b}", delta_color="off")
 
 # --- Plotting ---
 fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -114,9 +113,13 @@ fig.add_trace(go.Scatter(x=[0, 0.95], y=[r1_log2, r1_log2], mode='lines', name='
 fig.add_trace(go.Scatter(x=[1.05, 2], y=[r2_log2, r2_log2], mode='lines', name='Branch 2 Log2', 
                          line=dict(color='#1f77b4', width=5)), secondary_y=True)
 
+# Dynamic Log2 Axis Scaling (Ensures deep deletions stay in frame)
+max_abs_log2 = max(abs(r1_log2), abs(r2_log2))
+log2_bound = max(2.1, max_abs_log2 + 0.3) 
+
 # Add Genotype Annotations to Plot
-fig.add_annotation(x=0.475, y=2.0, text=f"Clone 1: {g1_str}", showarrow=False, font=dict(size=16, color="#d62728"), yref="y2")
-fig.add_annotation(x=1.525, y=2.0, text=f"Clone 2: {g2_str}", showarrow=False, font=dict(size=16, color="#1f77b4"), yref="y2")
+fig.add_annotation(x=0.475, y=log2_bound * 0.9, text=f"Clone 1: {g1_str}", showarrow=False, font=dict(size=16, color="#d62728"), yref="y2")
+fig.add_annotation(x=1.525, y=log2_bound * 0.9, text=f"Clone 2: {g2_str}", showarrow=False, font=dict(size=16, color="#1f77b4"), yref="y2")
 
 # Layout Formatting
 fig.update_layout(
@@ -127,6 +130,6 @@ fig.update_layout(
 )
 
 fig.update_yaxes(title_text="B-Allele Frequency", range=[-0.05, 1.05], tickvals=[0, 0.25, 0.5, 0.75, 1.0], secondary_y=False)
-fig.update_yaxes(title_text="Log2 Ratio", range=[-2.1, 2.1], tickvals=[-2, -1, 0, 1, 2], showgrid=True, gridcolor='#eee', secondary_y=True)
+fig.update_yaxes(title_text="Log2 Ratio", range=[-log2_bound, log2_bound], showgrid=True, gridcolor='#eee', zeroline=True, zerolinecolor='#999', secondary_y=True)
 
 st.plotly_chart(fig, use_container_width=True)
