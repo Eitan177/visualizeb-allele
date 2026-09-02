@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 # --- Configuration & States ---
-st.set_page_config(page_title="Clonal Evolution Simulator", layout="wide")
+st.set_page_config(page_title="Multi-Branch Clonal Evolution Simulator", layout="wide")
 
 INITIAL_STATES = {
     'Normal Diploid (AB)': {'c': 2, 'b': 1},
@@ -23,6 +23,11 @@ EVENTS = {
     'wgd': 'Whole-Genome Duplication',
     'submix': 'Subclonal Mix (+1 Minor Allele)'
 }
+
+COLORS = [
+    '#d62728', '#1f77b4', '#2ca02c', '#9467bd', '#ff7f0e', 
+    '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf'
+]
 
 # --- Admixture Math & Genotype Logic ---
 def get_g2(base_g, event):
@@ -65,65 +70,103 @@ def generate_scatter(x_start, x_end, base_baf, count=250):
     y = np.clip(target_baf + noise, 0, 1)
     return x, y
 
+# --- State Management ---
+if 'num_branches' not in st.session_state:
+    st.session_state.num_branches = 2
+
 # --- UI Sidebar ---
 with st.sidebar:
-    st.header("Parameters")
+    st.header("Global Parameters")
     purity = st.slider("Tumor Purity", 0.1, 1.0, 0.80, step=0.05)
     
-    st.subheader("Branch 1: Base State")
-    b1_label = st.selectbox("Initial Tumor State", list(INITIAL_STATES.keys()), index=2) # Changed default to Deletion
+    st.divider()
+    st.subheader("Manage Branches")
     
-    st.subheader("Branch 2: Settings")
-    is_linked = st.checkbox("Link Branches (Sequential)", value=True)
-    b2_base_label = st.selectbox("Branch 2: Base State", list(INITIAL_STATES.keys()), index=0, disabled=is_linked)
-    b2_event_key = st.selectbox("Next Event", list(EVENTS.keys()), format_func=lambda x: EVENTS[x], index=1) # Changed default to delA
+    col_btn1, col_btn2 = st.columns(2)
+    if col_btn1.button("➕ Add Branch"):
+        st.session_state.num_branches += 1
+    if col_btn2.button("➖ Remove Branch") and st.session_state.num_branches > 1:
+        st.session_state.num_branches -= 1
 
-# --- Routing ---
-g1 = INITIAL_STATES[b1_label]
-base_g2 = g1 if is_linked else INITIAL_STATES[b2_base_label]
-g2 = get_g2(base_g2, b2_event_key)
+    st.divider()
+    
+    branch_states = []
+    
+    # Dynamically generate UI for N branches
+    for i in range(st.session_state.num_branches):
+        with st.expander(f"Branch {i+1} Configuration", expanded=(i < 2)):
+            if i == 0:
+                b_label = st.selectbox("Initial Tumor State", list(INITIAL_STATES.keys()), index=2, key=f"b{i}_init")
+                current_g = INITIAL_STATES[b_label]
+                branch_states.append(current_g)
+            else:
+                is_linked = st.checkbox(f"Sequential: Link to Branch {i}", value=True, key=f"b{i}_link")
+                b_base_label = st.selectbox("Base State (if unlinked)", list(INITIAL_STATES.keys()), index=0, disabled=is_linked, key=f"b{i}_base")
+                # Default to 'delA' for Branch 2, otherwise 'none'
+                default_idx = 1 if i == 1 else 0
+                b_event_key = st.selectbox("Evolutionary Event", list(EVENTS.keys()), format_func=lambda x: EVENTS[x], index=default_idx, key=f"b{i}_event")
+                
+                base_g = branch_states[i-1] if is_linked else INITIAL_STATES[b_base_label]
+                current_g = get_g2(base_g, b_event_key)
+                branch_states.append(current_g)
 
-g1_str, g1_a, g1_b = get_genotype_string(g1)
-g2_str, g2_a, g2_b = get_genotype_string(g2)
+# --- Dashboard Layout: Metrics ---
+cols = st.columns(st.session_state.num_branches)
+calculated_data = []
 
-r1_log2, r1_baf = calc_admixture(g1, purity)
-r2_log2, r2_baf = calc_admixture(g2, purity)
-
-# --- Dashboard Layout ---
-col1, col2 = st.columns(2)
-with col1:
-    st.metric(label="Branch 1 Genotype", value=g1_str, delta=f"A: {g1_a} | B: {g1_b}", delta_color="off")
-with col2:
-    st.metric(label="Branch 2 Genotype (Deep Deletion)" if g2['c']==0 else "Branch 2 Genotype", 
-              value=g2_str, delta=f"A: {g2_a} | B: {g2_b}", delta_color="off")
+for i, col in enumerate(cols):
+    g = branch_states[i]
+    g_str, g_a, g_b = get_genotype_string(g)
+    log2, baf = calc_admixture(g, purity)
+    
+    calculated_data.append({'log2': log2, 'baf': baf, 'str': g_str})
+    
+    with col:
+        # Highlight Deep Deletion context visually
+        title = f"Branch {i+1}" + (" (Deep Del)" if g['c'] == 0 else "")
+        st.metric(label=title, value=g_str, delta=f"A: {g_a} | B: {g_b}", delta_color="off")
 
 # --- Plotting ---
 fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-b1_x, b1_y = generate_scatter(0, 1, r1_baf)
-b2_x, b2_y = generate_scatter(1, 2, r2_baf)
+max_abs_log2 = 0
 
-fig.add_trace(go.Scatter(x=b1_x, y=b1_y, mode='markers', name='Branch 1 BAF', 
-                         marker=dict(size=4, color='rgba(214, 39, 40, 0.5)')), secondary_y=False)
-fig.add_trace(go.Scatter(x=b2_x, y=b2_y, mode='markers', name='Branch 2 BAF', 
-                         marker=dict(size=4, color='rgba(31, 119, 180, 0.5)')), secondary_y=False)
+for i in range(st.session_state.num_branches):
+    data = calculated_data[i]
+    color = COLORS[i % len(COLORS)]
+    
+    # Update max log2 for dynamic axis scaling
+    max_abs_log2 = max(max_abs_log2, abs(data['log2']))
+    
+    # Calculate X positions for this branch
+    x_start = i
+    x_end = i + 1
+    
+    b_x, b_y = generate_scatter(x_start, x_end, data['baf'])
+    
+    # BAF Scatter
+    fig.add_trace(go.Scatter(x=b_x, y=b_y, mode='markers', name=f'Branch {i+1} BAF', 
+                             marker=dict(size=4, color=color, opacity=0.5)), secondary_y=False)
+    
+    # Log2 Segment (Slightly shortened to show visual separation between branches)
+    fig.add_trace(go.Scatter(x=[x_start, x_end - 0.05], y=[data['log2'], data['log2']], 
+                             mode='lines', name=f'Branch {i+1} Log2', 
+                             line=dict(color=color, width=5)), secondary_y=True)
 
-fig.add_trace(go.Scatter(x=[0, 0.95], y=[r1_log2, r1_log2], mode='lines', name='Branch 1 Log2', 
-                         line=dict(color='#d62728', width=5)), secondary_y=True)
-fig.add_trace(go.Scatter(x=[1.05, 2], y=[r2_log2, r2_log2], mode='lines', name='Branch 2 Log2', 
-                         line=dict(color='#1f77b4', width=5)), secondary_y=True)
-
-# Dynamic Log2 Axis Scaling (Ensures deep deletions stay in frame)
-max_abs_log2 = max(abs(r1_log2), abs(r2_log2))
+# Dynamic Log2 Axis Scaling
 log2_bound = max(2.1, max_abs_log2 + 0.3) 
 
-# Add Genotype Annotations to Plot
-fig.add_annotation(x=0.475, y=log2_bound * 0.9, text=f"Clone 1: {g1_str}", showarrow=False, font=dict(size=16, color="#d62728"), yref="y2")
-fig.add_annotation(x=1.525, y=log2_bound * 0.9, text=f"Clone 2: {g2_str}", showarrow=False, font=dict(size=16, color="#1f77b4"), yref="y2")
+# Add Annotations
+for i in range(st.session_state.num_branches):
+    data = calculated_data[i]
+    color = COLORS[i % len(COLORS)]
+    fig.add_annotation(x=i + 0.475, y=log2_bound * 0.9, text=f"Clone {i+1}: {data['str']}", 
+                       showarrow=False, font=dict(size=14, color=color), yref="y2")
 
 # Layout Formatting
 fig.update_layout(
-    xaxis=dict(title='Genomic Position', range=[0, 2], showticklabels=False, showgrid=False, zeroline=False),
+    xaxis=dict(title='Genomic Position (Sequential Branches)', range=[0, st.session_state.num_branches], 
+               showticklabels=False, showgrid=False, zeroline=False),
     height=600,
     margin=dict(l=60, r=60, t=40, b=40),
     showlegend=False
