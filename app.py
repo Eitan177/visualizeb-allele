@@ -16,6 +16,7 @@ INITIAL_STATES = {
 EVENTS = {
     'none': 'None (Maintained State)',
     'delB': 'Delete Minor Allele',
+    'delA': 'Delete Major Allele',
     'gainA': 'Gain Major Allele',
     'gainB': 'Gain Minor Allele',
     'wgd': 'Whole-Genome Duplication',
@@ -47,6 +48,16 @@ def generate_scatter(x_start, x_end, base_baf, count=250):
     target_baf = np.where(np.random.rand(count) > 0.5, base_baf, 1 - base_baf)
     y = np.clip(target_baf + noise, 0, 1)
     return x, y
+
+def get_g2(base_g, event):
+    c, b = base_g['c'], base_g['b']
+    if event == 'none': return {'c': c, 'b': b}
+    if event == 'delA': return {'c': max(c - 1, b), 'b': b}  # <-- Add this line
+    if event == 'delB': return {'c': max(c - 1, 0), 'b': max(b - 1, 0)}
+    if event == 'gainA': return {'c': c + 1, 'b': b}
+    if event == 'gainB': return {'c': c + 1, 'b': b + 1}
+    if event == 'wgd': return {'c': c * 2, 'b': b * 2}
+    if event == 'submix': return {'c': c + 0.5, 'b': b + 0.5}
 
 # --- UI Sidebar ---
 with st.sidebar:
